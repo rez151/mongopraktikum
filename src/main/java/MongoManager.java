@@ -1,14 +1,14 @@
 import com.mongodb.MongoClient;
+import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.model.Filters;
-import com.mongodb.client.model.FindOneAndUpdateOptions;
-import com.mongodb.client.result.UpdateResult;
+import com.mongodb.client.model.UpdateOptions;
 import org.bson.Document;
 
 import java.util.*;
+
+import static com.mongodb.client.model.Filters.eq;
 
 /**
  * Created by reserchr on 02.11.17.
@@ -39,62 +39,134 @@ public class MongoManager {
         System.out.println("collection " + collectionName + " dropped successfully");
     }
 
-    public void insertWords(List<Word> words) {
-
-        MongoCollection<Document> collection = database.getCollection("words");
-        List<Document> documents = new ArrayList<Document>();
-
-        for (Word word : words) {
-
-            Document document = new Document();
-            document.put("word", word.getWord());
-
-            Document time = new Document();
-            time.put("time", word.getTimestamp());
-            time.put("frequency", word.getFrequency());
-            document.put("times", time);
-
-            documents.add(document);
-        }
-        collection.insertMany(documents);
-
-/*        collection.findOneAndUpdate(Filters.eq("word", "hallo"), new Document("$inc", new Document("times",
-                new Document("time", 123456))));*/
-
-    }
-
     public long countCollection(String collectionName) {
         return database.getCollection(collectionName).count();
     }
 
+    public void insertWordsUpdate(List<Word> words) {
+
+        MongoCollection<Document> collection = this.database.getCollection("words");
+
+        for (Word word : words) {
+            FindIterable<Document> document = collection.find(eq("word", word.getWord()));
+            Document newDocument;
+
+            if (document.first() != null) {
+                List<Document> times = (List<Document>) document.first().get("times");
+
+                for (Document timeDocument : times) {
+                    Date dbTime = timeDocument.getDate("time");
+                    int dbFrequency = timeDocument.getInteger("freq");
+
+                    if (dbTime.compareTo(new Date(word.getTimestamp())) != 0) {
+                        //Timestamp does not exist in the DB.
+                        newDocument = new Document("word", word.getWord());
+                        newDocument.append("times", times);
+                        times.add(new Document("time", new Date(word.getTimestamp()))
+                                .append("freq", word.getFrequency()));
+                    } else {
+                        //Timestamp does exist in the DB.
+                        timeDocument.put("freq", dbFrequency + word.getFrequency());
+                        newDocument = new Document("word", word.getWord());
+                        newDocument.append("times", times);
+                    }
+                    collection.replaceOne(new Document("word", word.getWord()), newDocument, new UpdateOptions()
+                            .upsert(true));
+                    break;
+                }
+            } else {
+                //Create Document because it does not exist.
+                newDocument = new Document("word", word.getWord());
+                List<Document> dbTimeList = new ArrayList<Document>();
+                newDocument.append("times", dbTimeList);
+                dbTimeList.add(new Document("time", new Date(word.getTimestamp())).append("freq", word.getFrequency()));
+                collection.insertOne(newDocument);
+            }
+        }
+    }
+
+    public void insertWordsMany(List<Word> words) {
+
+        HashMap<String, List<Document>> documentsMap = new HashMap<String, List<Document>>();
+        ArrayList<Document> documents = new ArrayList<Document>();
+
+        for (Word word : words) {
+            if (!documentsMap.containsKey(word.getWord())) {
+                documentsMap.put(word.getWord(), new ArrayList<Document>());
+            }
+
+            if (!removeDups(documentsMap.get(word.getWord()), word.getTimestamp(), word.getFrequency())) {
+                Document subTimeDoc = new Document()
+                        .append("time", word.getTimestamp())
+                        .append("freq", word.getFrequency());
+                documentsMap.get(word.getWord()).add(subTimeDoc);
+            }
+        }
+
+        for (String key : documentsMap.keySet()) {
+            Document document = new Document()
+                    .append("word", key)
+                    .append("times", documentsMap.get(key));
+            documents.add(document);
+        }
+
+        database.getCollection("words").insertMany(documents);
+
+    }
+
+    private boolean removeDups(List<Document> docsWithDups, long timestamp, int freq) {
+
+        for (Document d : docsWithDups) {
+            Date date = new Date(d.getLong("time"));
+            if ((date.compareTo(new Date(timestamp))) == 0) {
+                int newFreq = freq + d.getInteger("freq");
+                d.put("freq", newFreq);
+                return true;
+            }
+        }
+        return false;
+    }
+
     public Map<Date, Integer> query(String word, Date from, Date to) {
+        HashMap<Date, Integer> res = new HashMap<Date, Integer>();
+        AggregateIterable<Document> it = this.database.getCollection("words").aggregate(this.aggregates(word, from,
+                to));
 
-        MongoCollection words = database.getCollection("words");
-
-        words.findOneAndUpdate(Filters.eq("word", "hallo"), new Document("$push", new Document("times",
-                new Document("time", 123456))));
-
-        FindIterable word1 = words.find(Filters.eq("word", word));
-
-        for (Object o : word1) {
-            System.out.println(o.toString());
+        for (Document document : it) {
+            for (Document d : (List<Document>) document.get("times")) {
+                res.put(new Date(d.getLong("time")), d.getInteger("freq"));
+            }
         }
+        return res;
+    }
 
+    private List<Document> aggregates(String word, Date from, Date to) {
+        List<Document> filters = new ArrayList<Document>();
 
-        FindIterable findIterable = words.find(Filters.all(
-                "word", word,
-                "year", "2015"));
-        /*FindIterable findIterable = words.find(Filters.and(
-                Filters.gte("year", toY),
-                Filters.lte("year", fromY)));
-*/
-        MongoCursor iterator = findIterable.iterator();
-        Document doc = new Document();
-
-        while (iterator.hasNext()) {
-            doc = (Document) iterator.next();
-        }
-
-        return null;
+        filters.add(new Document("$match", new Document("word", word)));
+        filters.add(new Document("$unwind", "$times"));
+        filters.add(new Document("$match",
+                        new Document("times.time",
+                                new Document("$gte", from.getTime())
+                                        .append("$lte", to.getTime())
+                        )
+                )
+        );
+        filters.add(new Document("$group",
+                        new Document("_id", null)
+                                .append("times",
+                                        new Document("$push",
+                                                new Document("freq", "$times.freq")
+                                                        .append("time", "$times.time")
+                                        )
+                                )
+                )
+        );
+        filters.add(new Document("$project",
+                        new Document("times", true)
+                                .append("_id", false)
+                )
+        );
+        return filters;
     }
 }

@@ -1,5 +1,3 @@
-import java.util.Calendar;
-
 /**
  * Created by reserchr on 09.10.17.
  */
@@ -26,6 +24,4 @@ class Word {
     long getTimestamp() {
         return timestamp;
     }
-
-
 }

@@ -1,0 +1,11 @@
+mongoimport --db infsys --collection films --drop --headerline --type tsv --file film.tsv
+
+db.films.count() := 197601
+
+db.films.distinct('name').length := 179151
+
+alleine:
+db.films.find( { directed_by: "Orson Welles" }).count() := 33
+
+Mit anderen:
+db.films.find( { directed_by: /Orson Welles/ }, {directed_by: 1}).count()

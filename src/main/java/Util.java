@@ -17,7 +17,6 @@ public class Util {
         StringBuilder timestampBuilder = new StringBuilder(timestamp);
         while (timestampBuilder.length() < 13) timestampBuilder.append("0");
         timestamp = timestampBuilder.toString();
-        //timestamp = timestamp.substring(0, 13);
         long ts = Long.parseLong(timestamp);
         return ts - ts % 86400000;
     }
